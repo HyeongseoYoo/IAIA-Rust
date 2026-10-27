@@ -1,0 +1,78 @@
+// micro1_direct_buggy.si — Pattern 1: direct shared scalar variable (BUGGY)
+// Bug: handler 0 corrupts SlotIdx after if-check -> left OOB on SqBuf[-1]
+// Expected: 1 interrupt warning, interrupt influence: handler 0
+// Fix: see micro1_direct_fixed.si — wrap SqBuf write in disable/enable
+//
+init {
+  // === Array sizes ===
+  MAX_SLOTS  := 8;
+  PRP_SZ     := 8;
+  TX_TOTAL   := 10;
+  REG_SZ     := 4;
+
+  // === OOB sentinel ===
+  ABORT_SLOT := 255;
+  LEFT_ABORT_SLOT := -1;
+
+  // === Register field indices ===
+  REG_STATUS := 0;
+  REG_PRPPTR := 1;
+  REG_ERRCNT := 2;
+
+  // === Error codes ===
+  ERR_NONE    := 0;
+  ERR_INVAL   := 1;
+  ERR_TIMEOUT := 2;
+
+  // === State variables ===
+  SlotIdx  := 0;
+  ErrCode  := 0;
+  ErrCount := 0;
+
+  // === Arrays ===
+  SqBuf     := malloc(8, 0);
+  RegFile   := malloc(4, 0);
+  PrpList   := malloc(8, 0);
+  DmaConf   := malloc(4, 0);
+  DescTable := malloc(4, 0);
+  PrpList2  := malloc(8, 0);
+  TxBuf     := malloc(8, 0);
+  DiagBuf   := malloc(4, 0);
+
+  // === Initialize shared heap state ===
+  *RegFile[REG_PRPPTR] := 0;
+  *DescTable[0]        := DmaConf;
+  *DmaConf[REG_PRPPTR] := 0;
+
+  handler 0 {
+    // NVME_ERR_EVT: corrupts SlotIdx (direct scalar) — bug source for micro1
+    ErrCode  := ERR_INVAL;
+    ErrCount := ErrCount + 1;
+    SlotIdx  := LEFT_ABORT_SLOT
+  };
+
+  handler 1 {
+    // TIMEOUT_EVT: corrupts RegFile[REG_PRPPTR] — bug source for micro2
+    ErrCount             := ErrCount + 1;
+    *RegFile[REG_PRPPTR] := ABORT_SLOT
+  };
+
+  handler 2 {
+    // CQ_FULL_EVT: corrupts DmaConf[REG_PRPPTR] via 1-level alias — bug source for micro3
+    DmaPtr              := DmaConf;
+    *DmaPtr[REG_PRPPTR] := ABORT_SLOT
+  }
+}
+
+main {
+  SlotIdx := 0;
+  // [BUG-1] handler 0 can fire after the bounds checks and set SlotIdx := -1.
+  // The then-branch body uses the corrupted index without re-checking.
+  if LEFT_ABORT_SLOT < SlotIdx
+  then (
+    if SlotIdx < MAX_SLOTS
+    then *SqBuf[SlotIdx] := ERR_NONE   // left OOB: SlotIdx may be -1 when handler 0 fires
+    else unit
+  )
+  else unit
+}
