@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use crate::domain::{IConfig, Label, Loc, LocId, Memory, Value};
@@ -8,15 +10,17 @@ use crate::parser::{Expr, ExprKind, Program};
 struct Config {
     mem: Memory,
     iconfig: IConfig,
-    handlers: Rc<HashMap<usize, Expr>>
+    handlers: Rc<HashMap<usize, Expr>>,
+    trigger_points: Rc<RefCell<HashMap<Label, VecDeque<usize>>>>,
 }
 
 impl Config {
-    pub fn new() -> Self {
+    pub fn new(trigger_points: HashMap<Label, VecDeque<usize>>) -> Self {
         Self {
             mem: Memory::default(),
             iconfig: IConfig::Enable,
             handlers: Rc::new(HashMap::new()),
+            trigger_points: Rc::new(RefCell::new(trigger_points)),
         }
     }
 }
@@ -30,15 +34,25 @@ struct Output {
 }
 
 pub fn intp(pgm: &Program) -> Result<Memory, String> {
-    let config = init_conf(pgm)
+    intp_with_interrupts(pgm, HashMap::new())
+}
+
+pub fn intp_with_interrupts(
+    pgm: &Program,
+    trigger_points: HashMap<Label, VecDeque<usize>>,
+) -> Result<Memory, String> {
+    let config = init_conf(pgm, trigger_points)
         .map_err(|error| format!("Init code 실행 중 에러: {error}"))?;
     let output = eval(&config, &pgm.main, false)
         .map_err(|error| format!("Main code 실행 중 에러: {error}"))?;
     Ok(output.mem)
 }
 
-fn init_conf(pgm: &Program) -> Result<Config, String> {
-    let mut config = Config::new();
+fn init_conf(
+    pgm: &Program,
+    trigger_points: HashMap<Label, VecDeque<usize>>,
+) -> Result<Config, String> {
+    let mut config = Config::new(trigger_points);
     let handlers = Rc::new(
     pgm.handlers
         .iter()
@@ -64,6 +78,7 @@ fn trigger_handler(i: usize, config: &Config) -> Result<Output, String> {
             mem,
             iconfig: iconf,
             handlers: Rc::clone(&config.handlers),
+            trigger_points: Rc::clone(&config.trigger_points),
         },
         body,
         false,
@@ -118,7 +133,8 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
                 &Config {
                     mem: output1.mem,
                     iconfig: output1.iconf,
-                    handlers: Rc::clone(&config.handlers)
+                    handlers: Rc::clone(&config.handlers),
+                    trigger_points: Rc::clone(&config.trigger_points),
                 },
                 e2,
                 false,
@@ -133,7 +149,8 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
                 &Config {
                     mem: output1.mem,
                     iconfig: output1.iconf,
-                    handlers: Rc::clone(&config.handlers)
+                    handlers: Rc::clone(&config.handlers),
+                    trigger_points: Rc::clone(&config.trigger_points),
                 },
                 e2,
                 false,
@@ -166,7 +183,8 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
                 &Config {
                     mem: output1.mem,
                     iconfig: output1.iconf,
-                    handlers: Rc::clone(&config.handlers)
+                    handlers: Rc::clone(&config.handlers),
+                    trigger_points: Rc::clone(&config.trigger_points),
                 },
                 e2,
                 false,
@@ -192,7 +210,8 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
                 &Config {
                     mem: output1.mem,
                     iconfig: output1.iconf,
-                    handlers: Rc::clone(&config.handlers)
+                    handlers: Rc::clone(&config.handlers),
+                    trigger_points: Rc::clone(&config.trigger_points),
                 },
                 e2,
                 false,
@@ -215,7 +234,8 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
                 &Config {
                     mem: output1.mem,
                     iconfig: output1.iconf,
-                    handlers: Rc::clone(&config.handlers)
+                    handlers: Rc::clone(&config.handlers),
+                    trigger_points: Rc::clone(&config.trigger_points),
                 },
                 e2,
                 false,
@@ -229,7 +249,8 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
             let conf_next = &Config {
                 mem: output1.mem,
                 iconfig: output1.iconf,
-                handlers: Rc::clone(&config.handlers)
+                handlers: Rc::clone(&config.handlers),
+                trigger_points: Rc::clone(&config.trigger_points),
             };
             let output_r = match output1.value {
                 Value::Integer(0) => eval(conf_next, e2, false)?,
@@ -244,7 +265,8 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
             let mut loop_config = Config {
                 mem: config.mem.clone(),
                 iconfig: config.iconfig,
-                handlers: Rc::clone(&config.handlers)
+                handlers: Rc::clone(&config.handlers),
+                trigger_points: Rc::clone(&config.trigger_points),
             };
 
             loop {
@@ -261,7 +283,8 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
                             &Config {
                                 mem: condition.mem,
                                 iconfig: condition.iconf,
-                                handlers: Rc::clone(&config.handlers)
+                                handlers: Rc::clone(&config.handlers),
+                                trigger_points: Rc::clone(&config.trigger_points),
                             },
                             e,
                             false,
@@ -269,7 +292,8 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
                         loop_config = Config {
                             mem: body.mem,
                             iconfig: body.iconf,
-                            handlers: Rc::clone(&config.handlers)
+                            handlers: Rc::clone(&config.handlers),
+                            trigger_points: Rc::clone(&config.trigger_points),
                         };
                     }
                     _ => return Err(format!("Condition으로 사용할 수 없음 {c:?}")),
@@ -278,10 +302,32 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
         }
     }
 
-    Ok(Output {
+    let mut output = Output {
         value: v,
         label: p,
         iconf,
         mem,
-    })
+    };
+
+    if output.iconf == IConfig::Enable {
+        let handler_id = config
+            .trigger_points
+            .borrow_mut()
+            .get_mut(label)
+            .and_then(VecDeque::pop_front);
+
+        if let Some(handler_id) = handler_id {
+            let handler_config = Config {
+                mem: output.mem,
+                iconfig: output.iconf,
+                handlers: Rc::clone(&config.handlers),
+                trigger_points: Rc::clone(&config.trigger_points),
+            };
+            let handler_output = trigger_handler(handler_id, &handler_config)?;
+            output.mem = handler_output.mem;
+            output.iconf = handler_output.iconf;
+        }
+    }
+
+    Ok(output)
 }

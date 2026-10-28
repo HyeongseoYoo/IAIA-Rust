@@ -1,0 +1,2 @@
+// Trigger handler 0 after main#5 (LEFT_ABORT_SLOT < SlotIdx) is evaluated.
+main#5 0

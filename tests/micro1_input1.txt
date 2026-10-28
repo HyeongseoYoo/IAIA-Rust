@@ -1,0 +1,2 @@
+// Trigger handler 0 after main#2 (SlotIdx := 0) is evaluated.
+main#2 0
