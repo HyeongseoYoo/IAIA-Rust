@@ -108,6 +108,7 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
             match output1.value {
                 Value::Loc(loc) => {
                     let deref_loc = loc.add(offset)?;
+                    output2.mem.check_deref(&deref_loc)?;
                     if lvalue {
                         v = Value::Loc(deref_loc);
                     } else if let Some((v_get, p_get)) = output2.mem.get(&deref_loc) {
@@ -145,13 +146,7 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
 
             mem = output2.mem;
             iconf = output2.iconf;
-            
-            for i in 0..n {
-                let l = Loc::new(LocId::Label(*label), i);
-                mem.insert(l, Value::Integer(v_init), *label);
-            }
-
-            v = Value::Loc(Loc::new(LocId::Label(*label), 0));
+            v = Value::Loc(mem.allocate(*label, n, Value::Integer(v_init))?);
         }
         ExprKind::Assign(e1, e2) => {
             let output1 = eval(config, e1, true)?;

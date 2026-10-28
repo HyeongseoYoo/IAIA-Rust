@@ -54,7 +54,7 @@ impl fmt::Display for Value {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LocId {
     Var(String),
-    Label(Label),
+    Heap { label: Label, allocation_id: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -90,7 +90,9 @@ impl fmt::Display for LocId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LocId::Var(name) => write!(f, "var({name:?})"),
-            LocId::Label(label) => write!(f, "label({label})"),
+            LocId::Heap { label, allocation_id } => {
+                write!(f, "heap({label}, alloc#{allocation_id})")
+            }
         }
     }
 }
@@ -104,6 +106,8 @@ impl fmt::Display for Loc {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Memory {
     cells: HashMap<Loc, (Value, Label)>,
+    allocation_sizes: HashMap<u64, usize>,
+    next_allocation_id: u64,
 }
 
 impl Memory {
@@ -112,6 +116,39 @@ impl Memory {
     }
     pub fn get(&self, loc: &Loc) -> Option<&(Value, Label)> {
         self.cells.get(loc)
+    }
+
+    pub fn allocate(&mut self, label: Label, size: usize, initial_value: Value) -> Result<Loc, String> {
+        if size == 0 {
+            return Err("Malloc 크기는 0보다 커야 합니다".to_owned());
+        }
+
+        let allocation_id = self.next_allocation_id;
+        self.next_allocation_id = allocation_id
+            .checked_add(1)
+            .ok_or_else(|| "할당 ID가 범위를 초과했습니다".to_owned())?;
+        self.allocation_sizes.insert(allocation_id, size);
+
+        let id = LocId::Heap { label, allocation_id };
+        for offset in 0..size {
+            self.insert(Loc::new(id.clone(), offset), initial_value.clone(), label);
+        }
+
+        Ok(Loc::new(id, 0))
+    }
+
+    pub fn check_deref(&self, loc: &Loc) -> Result<(), String> {
+        match &loc.id {
+            LocId::Var(_) if loc.offset == 0 => Ok(()),
+            LocId::Var(_) => Err(format!("변수 주소 범위를 벗어났습니다: {loc}")),
+            LocId::Heap { allocation_id, .. } => match self.allocation_sizes.get(allocation_id) {
+                Some(size) if loc.offset < *size => Ok(()),
+                Some(size) => Err(format!(
+                    "Heap 범위를 벗어난 주소입니다: {loc} (크기: {size})"
+                )),
+                None => Err(format!("존재하지 않는 Heap 할당입니다: {loc}")),
+            },
+        }
     }
 }
 
