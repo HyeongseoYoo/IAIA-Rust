@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use crate::domain::{IConfig, Label, Loc, LocId, Memory, Value};
 use crate::parser::{Expr, ExprKind, Program};
 
@@ -5,6 +8,7 @@ use crate::parser::{Expr, ExprKind, Program};
 struct Config {
     mem: Memory,
     iconfig: IConfig,
+    handlers: Rc<HashMap<usize, Expr>>
 }
 
 impl Config {
@@ -12,6 +16,7 @@ impl Config {
         Self {
             mem: Memory::default(),
             iconfig: IConfig::Enable,
+            handlers: Rc::new(HashMap::new()),
         }
     }
 }
@@ -34,10 +39,40 @@ pub fn intp(pgm: &Program) -> Result<Memory, String> {
 
 fn init_conf(pgm: &Program) -> Result<Config, String> {
     let mut config = Config::new();
+    let handlers = Rc::new(
+    pgm.handlers
+        .iter()
+        .map(|handler| (handler.id, handler.body.clone()))
+        .collect::<HashMap<_, _>>(),
+    );
+    config.handlers = handlers;
     let output = eval (&config, &pgm.global, false).map_err(|error| format!("Global eval 실패: {error}"))?;
     config.mem = output.mem;
     config.iconfig = output.iconf;
     Ok(config)
+}
+
+fn trigger_handler(i: usize, config: &Config) -> Result<Output, String> {
+    let mem = config.mem.clone();
+    let iconf = IConfig::Disable;
+    let body = config
+        .handlers
+        .get(&i)
+        .ok_or_else(|| format!("정의되지 않은 handler: {i}"))?;
+    let mut output =  match eval(
+        &Config {
+            mem,
+            iconfig: iconf,
+            handlers: Rc::clone(&config.handlers),
+        },
+        body,
+        false,
+    ) {
+        Ok(o) => {o},
+        Err(str) => return Err(format!("Handler {i} 실패 - {str}")),
+    };
+    output.iconf = config.iconfig;
+    Ok(output)
 }
 
 fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, String> {
@@ -83,6 +118,7 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
                 &Config {
                     mem: output1.mem,
                     iconfig: output1.iconf,
+                    handlers: Rc::clone(&config.handlers)
                 },
                 e2,
                 false,
@@ -97,6 +133,7 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
                 &Config {
                     mem: output1.mem,
                     iconfig: output1.iconf,
+                    handlers: Rc::clone(&config.handlers)
                 },
                 e2,
                 false,
@@ -129,6 +166,7 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
                 &Config {
                     mem: output1.mem,
                     iconfig: output1.iconf,
+                    handlers: Rc::clone(&config.handlers)
                 },
                 e2,
                 false,
@@ -154,6 +192,7 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
                 &Config {
                     mem: output1.mem,
                     iconfig: output1.iconf,
+                    handlers: Rc::clone(&config.handlers)
                 },
                 e2,
                 false,
@@ -176,6 +215,7 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
                 &Config {
                     mem: output1.mem,
                     iconfig: output1.iconf,
+                    handlers: Rc::clone(&config.handlers)
                 },
                 e2,
                 false,
@@ -189,6 +229,7 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
             let conf_next = &Config {
                 mem: output1.mem,
                 iconfig: output1.iconf,
+                handlers: Rc::clone(&config.handlers)
             };
             let output_r = match output1.value {
                 Value::Integer(0) => eval(conf_next, e2, false)?,
@@ -203,6 +244,7 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
             let mut loop_config = Config {
                 mem: config.mem.clone(),
                 iconfig: config.iconfig,
+                handlers: Rc::clone(&config.handlers)
             };
 
             loop {
@@ -219,6 +261,7 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
                             &Config {
                                 mem: condition.mem,
                                 iconfig: condition.iconf,
+                                handlers: Rc::clone(&config.handlers)
                             },
                             e,
                             false,
@@ -226,6 +269,7 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
                         loop_config = Config {
                             mem: body.mem,
                             iconfig: body.iconf,
+                            handlers: Rc::clone(&config.handlers)
                         };
                     }
                     _ => return Err(format!("Condition으로 사용할 수 없음 {c:?}")),
