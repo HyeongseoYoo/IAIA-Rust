@@ -1,8 +1,5 @@
-use std::fs::TryLockError::Error;
-use std::process::ExitCode;
-
-use crate::domain::{IConfig, Label, Loc, LocId, Memory, Section, Value};
-use crate::parser::{Expr, ExprKind, Program, BinaryOp};
+use crate::domain::{IConfig, Label, Loc, LocId, Memory, Value};
+use crate::parser::{Expr, ExprKind, Program};
 
 #[derive(Debug)]
 struct Config {
@@ -27,20 +24,20 @@ struct Output {
     mem: Memory,
 }
 
-pub fn intp(pgm: &Program) -> Memory {
-    let config: Config = init_conf(&pgm);
-    match eval(&config, &pgm.main, false) {
-        Ok(output) => output.mem,
-        Err(error) => {
-            eprintln!("{error}");
-            Memory::default()
-        }
-    }
+pub fn intp(pgm: &Program) -> Result<Memory, String> {
+    let config = init_conf(pgm)
+        .map_err(|error| format!("Init code 실행 중 에러: {error}"))?;
+    let output = eval(&config, &pgm.main, false)
+        .map_err(|error| format!("Main code 실행 중 에러: {error}"))?;
+    Ok(output.mem)
 }
 
-fn init_conf(pgm: &Program) -> Config {
+fn init_conf(pgm: &Program) -> Result<Config, String> {
     let mut config = Config::new();
-    config
+    let output = eval (&config, &pgm.global, false).map_err(|error| format!("Global eval 실패: {error}"))?;
+    config.mem = output.mem;
+    config.iconfig = output.iconf;
+    Ok(config)
 }
 
 fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, String> {
@@ -49,7 +46,7 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
     let mut v: Value = Value::Unit;
     let mut p: Label = Label::Unit;
 
-    let Expr { label: _, line: _, kind: expr } = expression;
+    let Expr { label, line: _, kind: expr } = expression;
 
     match expr {
         ExprKind::Unit => {}
@@ -90,6 +87,8 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
                 e2,
                 false,
             )?;
+            mem = output2.mem;
+            iconf = output2.iconf;
             v = bop.apply(output1.value, output2.value)?;
         }
         ExprKind::Dereference(e1, e2) => {
@@ -120,8 +119,124 @@ fn eval(config: &Config, expression: &Expr, lvalue: bool) -> Result<Output, Stri
                 }
                 _ => return Err(format!("Deref 할 수 없는 식: {e1:?}")),
             }
+            mem = output2.mem;
+            iconf = output2.iconf;
         }
-        _ => {}
+        ExprKind::Malloc(e1, e2) => {
+            let output1 = eval(config, e1, false)?;
+            let output2 = eval(
+                &Config {
+                    mem: output1.mem,
+                    iconfig: output1.iconf,
+                },
+                e2,
+                false,
+            )?;
+
+            let n = match output1.value {
+                Value::Integer(i) if i>0 => usize::try_from(i).map_err(|_| "Malloc 크기가 너무 큽니다".to_owned())?,
+                Value::Integer(_) => return Err(format!("Malloc 할 수 없음 (n <= 0): {e1:?}")),
+                _ => return Err(format!("Malloc 크기는 정수여야 합니다: {e1:?}")),
+            };
+            let v_init = match output2.value {
+                Value::Integer(i) => i,
+                _ => return Err(format!("Deref 할 수 없는 식: {e2:?}")),
+            };
+
+            mem = output2.mem;
+            iconf = output2.iconf;
+            
+            for i in 0..n {
+                let l = Loc::new(LocId::Label(*label), i);
+                mem.insert(l, Value::Integer(v_init), *label);
+            }
+
+            v = Value::Loc(Loc::new(LocId::Label(*label), 0));
+        }
+        ExprKind::Assign(e1, e2) => {
+            let output1 = eval(config, e1, true)?;
+            let output2 = eval(
+                &Config {
+                    mem: output1.mem,
+                    iconfig: output1.iconf,
+                },
+                e2,
+                false,
+            )?;
+
+            mem = output2.mem;
+            iconf = output2.iconf;
+
+            let l = match output1.value {
+                Value::Loc(loc) => loc,
+                _ => return Err(format!("Assign 할 수 없는 주소: {e1:?}"))
+            };
+
+            mem.insert(l, output2.value, *label);
+
+        }
+        ExprKind::Sequence(e1, e2) => {
+            let output1 = eval(config, e1, false)?;
+            let output2 = eval(
+                &Config {
+                    mem: output1.mem,
+                    iconfig: output1.iconf,
+                },
+                e2,
+                false,
+            )?;
+
+            mem = output2.mem;
+            iconf = output2.iconf;
+        }
+        ExprKind::If(c, e1, e2) => {
+            let output1 = eval(config, c, false)?;
+            let conf_next = &Config {
+                mem: output1.mem,
+                iconfig: output1.iconf,
+            };
+            let output_r = match output1.value {
+                Value::Integer(0) => eval(conf_next, e2, false)?,
+                Value::Integer(_) => eval(conf_next, e1, false)?,
+                _ => return Err(format!("Condition으로 사용할 수 없음 {c:?}")),
+            };
+
+            mem = output_r.mem;
+            iconf = output_r.iconf;
+        }
+        ExprKind::While(c, e) => {
+            let mut loop_config = Config {
+                mem: config.mem.clone(),
+                iconfig: config.iconfig,
+            };
+
+            loop {
+                let condition = eval(&loop_config, c, false)?;
+                match condition.value {
+                    Value::Integer(0) => {
+                        // Preserve side effects from the final condition check.
+                        mem = condition.mem;
+                        iconf = condition.iconf;
+                        break;
+                    }
+                    Value::Integer(_) => {
+                        let body = eval(
+                            &Config {
+                                mem: condition.mem,
+                                iconfig: condition.iconf,
+                            },
+                            e,
+                            false,
+                        )?;
+                        loop_config = Config {
+                            mem: body.mem,
+                            iconfig: body.iconf,
+                        };
+                    }
+                    _ => return Err(format!("Condition으로 사용할 수 없음 {c:?}")),
+                }
+            }
+        }
     }
 
     Ok(Output {

@@ -102,8 +102,16 @@ fn run_interpreter_mode(target: &str) -> ExitCode {
             Ok(source) => 
                 match parser::parse(&source) {
                 Ok(pgm) => {
-                    println!("[성공] {name}");
-                    println!("{}", intp::intp(&pgm));
+                    match intp::intp(&pgm) {
+                        Ok(memory) => {
+                            println!("[성공] {name}");
+                            println!("{memory}");
+                        }
+                        Err(error) => {
+                            failed = true;
+                            println!("[실패] {name} - 실행에 실패했습니다: {error}");
+                        }
+                    }
                 },
                 Err(error) => {
                     failed = true;

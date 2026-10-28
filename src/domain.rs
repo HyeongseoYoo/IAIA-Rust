@@ -117,7 +117,10 @@ impl Memory {
 
 impl fmt::Display for Memory {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (loc, (value, label)) in &self.cells {
+        let mut cells: Vec<_> = self.cells.iter().collect();
+        cells.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+        for (loc, (value, label)) in cells {
             writeln!(f, "{loc} -> {value} @ {label}")?;
         };
         Ok(())
